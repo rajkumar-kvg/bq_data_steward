@@ -5,6 +5,7 @@ import "./index.css";
 import { listConnections } from "./api";
 import ConnectionForm from "./components/ConnectionForm";
 import ConnectionDetail from "./components/ConnectionDetail";
+import ChatInterface from "./components/ChatInterface";
 
 function PlusIcon() {
   return (
@@ -32,9 +33,28 @@ function TrashIcon() {
   );
 }
 
+function ChatBubbleIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
+    </svg>
+  );
+}
+
+function InfoIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
 export default function App() {
   const [connections, setConnections] = useState([]);
   const [selected, setSelected] = useState(null); // selected connection or "new"
+  const [view, setView] = useState("detail"); // "detail" | "chat"
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -50,15 +70,18 @@ export default function App() {
   const handleCreated = (newConn) => {
     setConnections((prev) => [newConn, ...prev]);
     setSelected(newConn);
+    setView("detail");
   };
 
   const handleDeleted = (id) => {
     setConnections((prev) => prev.filter((c) => c.id !== id));
     setSelected("new");
+    setView("detail");
   };
 
   const handleSelectConn = (conn) => {
     setSelected(conn);
+    setView("detail");
   };
 
   return (
@@ -113,6 +136,31 @@ export default function App() {
             ))
           )}
         </div>
+
+        {/* ── Per-connection navigation ── */}
+        {selected && selected !== "new" && (
+          <div style={{ borderTop: "1px solid var(--border)", padding: "10px 10px 4px" }}>
+            <div className="sidebar-header-label" style={{ padding: "4px 4px 6px", fontSize: 10 }}>
+              Navigate
+            </div>
+            <div
+              className={`conn-item${view === "detail" ? " active" : ""}`}
+              onClick={() => setView("detail")}
+              style={{ cursor: "pointer", gap: 8 }}
+            >
+              <InfoIcon />
+              <span style={{ fontSize: 12, fontWeight: 500 }}>Details</span>
+            </div>
+            <div
+              className={`conn-item${view === "chat" ? " active" : ""}`}
+              onClick={() => setView("chat")}
+              style={{ cursor: "pointer", gap: 8 }}
+            >
+              <ChatBubbleIcon />
+              <span style={{ fontSize: 12, fontWeight: 500 }}>Chat</span>
+            </div>
+          </div>
+        )}
       </aside>
 
       {/* ── Main ── */}
@@ -128,6 +176,20 @@ export default function App() {
               </p>
             </div>
             <ConnectionForm onCreated={handleCreated} />
+          </>
+        ) : view === "chat" ? (
+          <>
+            <div>
+              <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5, marginBottom: 4 }}>
+                Chat with your Data
+              </h1>
+              <p style={{ color: "var(--text-secondary)", fontSize: 14 }}>
+                Ask questions in plain English about <strong>{selected.name}</strong> — powered by your Cube models.
+              </p>
+            </div>
+            <div className="card" style={{ padding: 24 }}>
+              <ChatInterface connId={selected.id} />
+            </div>
           </>
         ) : (
           <>

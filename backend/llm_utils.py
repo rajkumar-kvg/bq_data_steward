@@ -591,3 +591,139 @@ Return ONLY the corrected JavaScript. No explanation, no markdown fences."""
     except Exception as e:
         print(f"Error fixing cube model: {e}")
         raise e
+
+
+def generate_cube_query(
+    question: str,
+    schema_context: str,
+    history: List[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """
+    Pass 1 of chat: convert a natural language question into a Cube REST API query JSON.
+    Temperature 0.1 — deterministic, schema-grounded output.
+
+    Returns a dict. If the question cannot be answered with the available schema,
+    returns {"error": "reason"}.
+    Raises json.JSONDecodeError or OpenAI exception on failure.
+    """
+    api_key    = os.environ.get("LLM_OPENAI_API_KEY", "dummy-key")
+    base_url   = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
+    model_name = os.environ.get("LLM_MODEL_NAME", "gpt-3.5-turbo")
+    client = OpenAI(api_key=api_key, base_url=base_url)
+
+    system_prompt = f"""You are a Cube.js query expert. Your ONLY job is to convert a natural language question into a Cube REST API query JSON object.
+
+AVAILABLE SCHEMA:
+{schema_context}
+
+RULES:
+1. Output ONLY valid JSON. No markdown, no explanation, no text before or after the JSON.
+2. Use ONLY measure/dimension names that appear EXACTLY in the AVAILABLE SCHEMA above. Do NOT invent names.
+3. Every member reference must use the format "CubeName.memberKey" where both CubeName and memberKey come verbatim from the schema.
+4. The JSON must have at least one of: "measures" or "dimensions".
+5. Valid top-level keys: measures (array), dimensions (array), filters (array), timeDimensions (array), limit (number, max 1000).
+6. Filter format: {{"member": "CubeName.dimension", "operator": "equals", "values": ["val"]}}
+   Valid operators: equals, notEquals, contains, notContains, gt, gte, lt, lte, set, notSet, inDateRange
+7. TimeDimension format: {{"dimension": "CubeName.timeDimension", "granularity": "day|week|month|quarter|year"}}
+8. If the question CANNOT be answered with the available schema, output exactly: {{"error": "brief reason why"}}
+9. Do NOT add any text before or after the JSON. The entire response must be parseable by json.loads().
+10. Default limit to 100 unless the user specifies more (max 1000)."""
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    if history:
+        for msg in history:
+            if msg.get("role") in ("user", "assistant"):
+                messages.append({"role": msg["role"], "content": msg["content"]})
+
+    messages.append({"role": "user", "content": question})
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=0.1,
+        )
+        content = response.choices[0].message.content.strip()
+        # Strip markdown fences if the model disobeys
+        for prefix in ("```json", "```"):
+            if content.startswith(prefix):
+                content = content[len(prefix):]
+                break
+        if content.endswith("```"):
+            content = content[:-3]
+        return json.loads(content.strip())
+    except json.JSONDecodeError as e:
+        print(f"[generate_cube_query] JSON parse error: {e}. Raw: {content[:300]}")
+        raise
+    except Exception as e:
+        print(f"[generate_cube_query] Error: {e}")
+        raise
+
+
+def generate_chat_answer(
+    question: str,
+    cube_query: Dict[str, Any],
+    cube_result: Dict[str, Any],
+    history: List[Dict[str, str]] = None,
+) -> str:
+    """
+    Pass 2 of chat: convert (question + Cube.js result data) into a natural language answer.
+    Temperature 0.3 — readable, slightly varied prose.
+
+    Returns a plain text answer string.
+    Raises OpenAI exception on failure.
+    """
+    api_key    = os.environ.get("LLM_OPENAI_API_KEY", "dummy-key")
+    base_url   = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
+    model_name = os.environ.get("LLM_MODEL_NAME", "gpt-3.5-turbo")
+    client = OpenAI(api_key=api_key, base_url=base_url)
+
+    system_prompt = """You are a helpful data analyst assistant for BQ Steward, a BigQuery data governance tool.
+You will be given the user's original question, the query that was executed, and the data results returned.
+Answer the question in plain, clear language based on the data provided.
+
+RULES:
+- Be concise but complete. 1-3 sentences for simple numbers, a short paragraph for lists.
+- If the data is empty, say so clearly and suggest why (e.g., filters too narrow, no data in range).
+- Format numbers with commas for readability (e.g., 1,234,567).
+- Do NOT make up data or invent values not present in the results.
+- Do NOT mention technical query terms — speak as a data analyst to a business user.
+- If there are multiple rows, briefly summarize the key finding rather than listing every row."""
+
+    # Trim to 50 rows to avoid token overflow
+    result_data = cube_result.get("data", [])
+    total_rows = len(result_data)
+    if total_rows > 50:
+        result_data = result_data[:50]
+        data_note = f" (showing first 50 of {total_rows} rows)"
+    else:
+        data_note = ""
+
+    user_content = f"""Question: {question}
+
+Query executed:
+{json.dumps(cube_query, indent=2)}
+
+Data results{data_note}:
+{json.dumps(result_data, indent=2)}"""
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    if history:
+        for msg in history:
+            if msg.get("role") in ("user", "assistant"):
+                messages.append({"role": msg["role"], "content": msg["content"]})
+
+    messages.append({"role": "user", "content": user_content})
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=0.3,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[generate_chat_answer] Error: {e}")
+        raise
