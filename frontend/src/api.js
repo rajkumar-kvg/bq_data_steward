@@ -32,3 +32,7 @@ export const updateMetrics = (connId, dsId, tblId, metrics) =>
   api.put(`${tbl(connId, dsId, tblId)}/meta/metrics`, { metrics });
 export const updateCubeModel = (connId, dsId, tblId, cubeModel) =>
   api.put(`${tbl(connId, dsId, tblId)}/meta/cube-model`, { cube_model: cubeModel });
+
+// Chat
+export const chatQuery = (connId, message, history = []) =>
+  api.post(`/connections/${connId}/chat`, { message, history });
