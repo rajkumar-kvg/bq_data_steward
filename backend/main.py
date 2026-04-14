@@ -143,6 +143,77 @@ def _parse_cube_model_schema(cube_model_js: str) -> dict:
     }
 
 
+def _coerce_cube_member(value, accepted_keys: tuple[str, ...]) -> Optional[str]:
+    """Accept the member object shapes LLMs commonly emit despite the prompt."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in accepted_keys:
+            nested = value.get(key)
+            if isinstance(nested, str):
+                return nested
+    return None
+
+
+def _normalize_generated_cube_query(query: dict, allowed_members: dict) -> dict:
+    """
+    Keep LLM-generated Cube queries inside the REST API shape Cube expects.
+
+    Models often return [{"member": "Cube.measure"}] for measures/dimensions even
+    though Cube requires plain string arrays. Normalize that, then verify every
+    referenced member belongs to the generated schema context.
+    """
+    if not isinstance(query, dict):
+        raise HTTPException(status_code=422, detail="Generated query must be a JSON object.")
+
+    normalized = dict(query)
+    allowed_by_kind = {
+        "measures": allowed_members.get("measures", set()),
+        "dimensions": allowed_members.get("dimensions", set()),
+    }
+    allowed_any = allowed_by_kind["measures"] | allowed_by_kind["dimensions"]
+
+    for key in ("measures", "dimensions"):
+        if key not in normalized:
+            continue
+        if not isinstance(normalized[key], list):
+            raise HTTPException(status_code=422, detail=f"Generated query field '{key}' must be an array.")
+
+        coerced = []
+        for item in normalized[key]:
+            member = _coerce_cube_member(item, ("member", "name", "measure", "dimension"))
+            if not member:
+                raise HTTPException(status_code=422, detail=f"Generated query field '{key}' contains an invalid member.")
+            if member not in allowed_by_kind[key]:
+                raise HTTPException(status_code=422, detail=f"Generated query uses unknown {key[:-1]}: {member}")
+            coerced.append(member)
+        normalized[key] = coerced
+
+    if "filters" in normalized:
+        if not isinstance(normalized["filters"], list):
+            raise HTTPException(status_code=422, detail="Generated query field 'filters' must be an array.")
+        for flt in normalized["filters"]:
+            if not isinstance(flt, dict):
+                raise HTTPException(status_code=422, detail="Generated query filters must be objects.")
+            member = _coerce_cube_member(flt.get("member"), ("member", "name", "measure", "dimension"))
+            if not member or member not in allowed_any:
+                raise HTTPException(status_code=422, detail=f"Generated query uses unknown filter member: {member}")
+            flt["member"] = member
+
+    if "timeDimensions" in normalized:
+        if not isinstance(normalized["timeDimensions"], list):
+            raise HTTPException(status_code=422, detail="Generated query field 'timeDimensions' must be an array.")
+        for time_dim in normalized["timeDimensions"]:
+            if not isinstance(time_dim, dict):
+                raise HTTPException(status_code=422, detail="Generated query timeDimensions must be objects.")
+            dimension = _coerce_cube_member(time_dim.get("dimension"), ("member", "name", "dimension"))
+            if not dimension or dimension not in allowed_by_kind["dimensions"]:
+                raise HTTPException(status_code=422, detail=f"Generated query uses unknown time dimension: {dimension}")
+            time_dim["dimension"] = dimension
+
+    return normalized
+
+
 def _execute_cube_query(conn_id: int, query: dict) -> dict:
     """
     Execute a Cube REST API query against the Cube.js runtime.
@@ -870,6 +941,7 @@ def chat_query(
 
     # Build schema context string for the LLM prompt
     schema_parts = []
+    allowed_members = {"measures": set(), "dimensions": set()}
     for meta in table_metas:
         parsed = _parse_cube_model_schema(meta.cube_model)
         if not parsed["cube_name"]:
@@ -880,12 +952,16 @@ def chat_query(
         if parsed["measures"]:
             lines.append("  Measures:")
             for m in parsed["measures"]:
-                lines.append(f"    - {cube_name}.{m['key']} (type: {m['type']})")
+                member_name = f"{cube_name}.{m['key']}"
+                allowed_members["measures"].add(member_name)
+                lines.append(f"    - {member_name} (type: {m['type']})")
 
         if parsed["dimensions"]:
             lines.append("  Dimensions:")
             for d in parsed["dimensions"]:
-                lines.append(f"    - {cube_name}.{d['key']} (type: {d['type']})")
+                member_name = f"{cube_name}.{d['key']}"
+                allowed_members["dimensions"].add(member_name)
+                lines.append(f"    - {member_name} (type: {d['type']})")
 
         # Include human-readable metric definitions for extra context
         if meta.metrics:
@@ -917,6 +993,8 @@ def chat_query(
             answer=f"I cannot answer that with the available data. {cube_query['error']}",
             error=cube_query["error"],
         )
+
+    cube_query = _normalize_generated_cube_query(cube_query, allowed_members)
 
     # ── Execute Cube query ────────────────────────────────────────────────────
     cube_result = _execute_cube_query(conn_id, cube_query)
