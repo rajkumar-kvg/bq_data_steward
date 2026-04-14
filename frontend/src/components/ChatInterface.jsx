@@ -260,6 +260,12 @@ export default function ChatInterface({ connId }) {
       .map((m) => ({ role: m.role, content: m.content }))
       .slice(-20); // cap to last 20 turns to stay within context limits
 
+  const handleNewChat = () => {
+    setMessages([WELCOME_MSG]);
+    setInput("");
+    textareaRef.current?.focus();
+  };
+
   const handleSend = async () => {
     const text = input.trim();
     if (!text || loading) return;
@@ -312,6 +318,21 @@ export default function ChatInterface({ connId }) {
       height: "calc(100vh - 260px)",
       minHeight: 500,
     }}>
+      <div style={{
+        display: "flex",
+        justifyContent: "flex-end",
+        paddingBottom: 10,
+      }}>
+        <button
+          type="button"
+          onClick={handleNewChat}
+          disabled={loading}
+          className="btn btn-ghost btn-sm"
+        >
+          New chat
+        </button>
+      </div>
+
       {/* ── Message thread ── */}
       <div style={{
         flex: 1,

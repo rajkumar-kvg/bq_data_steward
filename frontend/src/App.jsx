@@ -51,6 +51,37 @@ function InfoIcon() {
   );
 }
 
+function ViewTabs({ view, onChange }) {
+  return (
+    <div style={{
+      display: "inline-flex",
+      gap: 6,
+      padding: 4,
+      background: "var(--bg-card)",
+      border: "1px solid var(--border)",
+      borderRadius: "var(--radius)",
+      alignSelf: "flex-start",
+    }}>
+      <button
+        type="button"
+        onClick={() => onChange("detail")}
+        className={`btn btn-sm ${view === "detail" ? "btn-primary" : "btn-ghost"}`}
+      >
+        <InfoIcon />
+        Details
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("chat")}
+        className={`btn btn-sm ${view === "chat" ? "btn-primary" : "btn-ghost"}`}
+      >
+        <ChatBubbleIcon />
+        Chat
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   const [connections, setConnections] = useState([]);
   const [selected, setSelected] = useState(null); // selected connection or "new"
@@ -61,7 +92,11 @@ export default function App() {
     listConnections()
       .then((res) => {
         setConnections(res.data);
-        if (res.data.length === 0) setSelected("new");
+        if (res.data.length === 0) {
+          setSelected("new");
+        } else {
+          setSelected((current) => current ?? res.data[0]);
+        }
       })
       .catch(() => toast.error("Could not reach backend."))
       .finally(() => setLoading(false));
@@ -74,8 +109,9 @@ export default function App() {
   };
 
   const handleDeleted = (id) => {
-    setConnections((prev) => prev.filter((c) => c.id !== id));
-    setSelected("new");
+    const remaining = connections.filter((c) => c.id !== id);
+    setConnections(remaining);
+    setSelected(remaining[0] ?? "new");
     setView("detail");
   };
 
@@ -177,35 +213,37 @@ export default function App() {
             </div>
             <ConnectionForm onCreated={handleCreated} />
           </>
-        ) : view === "chat" ? (
-          <>
-            <div>
-              <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5, marginBottom: 4 }}>
-                Chat with your Data
-              </h1>
-              <p style={{ color: "var(--text-secondary)", fontSize: 14 }}>
-                Ask questions in plain English about <strong>{selected.name}</strong> — powered by your Cube models.
-              </p>
-            </div>
-            <div className="card" style={{ padding: 24 }}>
-              <ChatInterface connId={selected.id} />
-            </div>
-          </>
         ) : (
           <>
-            <div>
-              <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5, marginBottom: 4 }}>
-                Connection Details
-              </h1>
-              <p style={{ color: "var(--text-secondary)", fontSize: 14 }}>
-                Test your connection and browse datasets and tables.
-              </p>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+              <div>
+                <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5, marginBottom: 4 }}>
+                  {view === "chat" ? "Chat with your Data" : "Connection Details"}
+                </h1>
+                <p style={{ color: "var(--text-secondary)", fontSize: 14 }}>
+                  {view === "chat" ? (
+                    <>
+                      Ask questions in plain English about <strong>{selected.name}</strong> — powered by your Cube models.
+                    </>
+                  ) : (
+                    "Test your connection and browse datasets and tables."
+                  )}
+                </p>
+              </div>
+              <ViewTabs view={view} onChange={setView} />
             </div>
-            <ConnectionDetail
-              key={selected.id}
-              conn={selected}
-              onDeleted={handleDeleted}
-            />
+
+            <div style={{ display: view === "chat" ? "none" : "block" }}>
+              <ConnectionDetail
+                key={selected.id}
+                conn={selected}
+                onDeleted={handleDeleted}
+              />
+            </div>
+
+            <div className="card" style={{ padding: 24, display: view === "chat" ? "block" : "none" }}>
+              <ChatInterface connId={selected.id} />
+            </div>
           </>
         )}
       </main>
