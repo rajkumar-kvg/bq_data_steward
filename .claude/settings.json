@@ -1,0 +1,66 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l /Users/rajkumar-personal/projects/prototype-data-steward/backend/main.py /Users/rajkumar-personal/projects/prototype-data-steward/backend/llm_utils.py /Users/rajkumar-personal/projects/prototype-data-steward/frontend/src/components/*.jsx)",
+      "Edit(/.claude/skills/bq-schema-reader/**)",
+      "Edit(/.claude/skills/cube-model-generator/**)",
+      "Edit(/.claude/skills/data-steward-architecture/**)",
+      "Edit(/.claude/skills/llm-prompt-patterns/**)",
+      "Bash(docker exec:*)",
+      "Bash(curl -s -X POST http://localhost:4000/cubejs-api/v1/load -H 'Content-Type: application/json' -H 'Authorization: Bearer bq_steward_secret_key' -H 'x-cube-conn-id: 1' -d '{\"query\": {\"measures\": [\"subscriptions.TotalCustomers\"]}}')",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s \"http://localhost:8000/connections/1/cube-models/internal\")",
+      "Bash(python3 -c ':*)",
+      "Bash(docker restart:*)",
+      "Bash(curl -s -X POST http://localhost:4000/cubejs-api/v1/load -H 'Content-Type: application/json' -H 'Authorization: Bearer bq_steward_secret_key' -H 'x-cube-conn-id: 1' -d '{\"query\": {\"measures\": [\"subscriptions.TotalSubscriptions\",\"subscriptions.TotalCustomerAmount\",\"subscriptions.AverageCustomerAmount\"]}}')",
+      "Bash(curl -s http://localhost:4000/cubejs-api/v1/meta -H 'Authorization: Bearer bq_steward_secret_key' -H 'x-cube-conn-id: 1')",
+      "Bash(curl -s -X POST http://localhost:8000/connections/1/datasets/eg_case_study/tables/authors/meta/generate-cube-model -H 'Content-Type: application/json')",
+      "Bash(curl -s -X POST http://localhost:4000/cubejs-api/v1/load -H 'Content-Type: application/json' -H 'Authorization: Bearer bq_steward_secret_key' -H 'x-cube-conn-id: 1' -d '{\"query\": {\"measures\": [\"authors.TotalAuthorsCount\"]}}')",
+      "Bash(ls /Users/rajkumar-personal/projects/prototype-data-steward/.env*)",
+      "Read(//Users/rajkumar-personal/projects/**)",
+      "Bash(zip -r bq-steward-share.zip prototype-data-steward --exclude prototype-data-steward/.env --exclude prototype-data-steward/.DS_Store --exclude prototype-data-steward/frontend/.DS_Store --exclude 'prototype-data-steward/frontend/node_modules/*' --exclude 'prototype-data-steward/frontend/dist/*' --exclude 'prototype-data-steward/backend/venv/*' --exclude 'prototype-data-steward/backend/__pycache__/*' --exclude prototype-data-steward/backend/test.db --exclude 'prototype-data-steward/.claude/logs/*' --exclude 'prototype-data-steward/.claude/agents/*' --exclude '*/memory/*')",
+      "Bash(git init:*)",
+      "Bash(git remote:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git add:*)",
+      "Bash(grep -E \"\\(\\\\.env$|credential|secret|key\\\\.json\\)\")"
+    ],
+    "additionalDirectories": [
+      "/Users/rajkumar-personal/projects/prototype-data-steward/.claude/skills/bq-schema-reader"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool_validate.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/post_edit_lint.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/session_context_inject.py"
+          }
+        ]
+      }
+    ]
+  }
+}

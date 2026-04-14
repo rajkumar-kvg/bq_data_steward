@@ -1,0 +1,22 @@
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    strictPort: true,
+    proxy: {
+      '/cube-api': {
+        // Inside Docker the frontend container reaches cube by container name.
+        // Outside Docker (local dev) it falls back to localhost:4000.
+        target: 'http://cube:4000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/cube-api/, '/cubejs-api'),
+      },
+    },
+  },
+})
+
