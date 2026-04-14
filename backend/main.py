@@ -65,6 +65,128 @@ def _extract_cube_error_for(cube_name: str, full_error: str) -> str:
                 break
     return "\n".join(relevant) if relevant else full_error
 
+def _parse_cube_model_schema(cube_model_js: str) -> dict:
+    """
+    Extract cube name, measures, and dimensions from a Cube.js JS model string.
+    Returns:
+        {
+          "cube_name": str | None,
+          "measures": [{"key": str, "type": str}, ...],
+          "dimensions": [{"key": str, "type": str}, ...]
+        }
+    Mirrors the brace-counting approach in KPIDashboard.jsx:parseMeasuresFromModel().
+    """
+    if not cube_model_js:
+        return {"cube_name": None, "measures": [], "dimensions": []}
+
+    name_match = re.search(r"cube\s*\(\s*[`'\"](\w[\w-]*)[`'\"]", cube_model_js)
+    cube_name = name_match.group(1) if name_match else None
+
+    def _extract_block_members(js: str, block_keyword: str) -> list:
+        members = []
+        block_start = re.search(rf"\b{block_keyword}\s*:\s*\{{", js)
+        if not block_start:
+            return members
+
+        open_pos = js.index("{", block_start.start())
+        depth, i, block_chars = 0, open_pos, []
+        while i < len(js):
+            ch = js[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            block_chars.append(ch)
+            i += 1
+        block_content = "".join(block_chars[1:])  # strip leading {
+
+        current_depth = 0
+        current_member_name = None
+        current_member_lines: list = []
+
+        for line in block_content.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            if current_depth == 0:
+                key_match = re.match(r"^(\w+)\s*:\s*\{", stripped)
+                if key_match:
+                    current_member_name = key_match.group(1)
+                    current_member_lines = [stripped]
+            elif current_member_name:
+                current_member_lines.append(stripped)
+
+            for ch in stripped:
+                if ch == "{":
+                    current_depth += 1
+                elif ch == "}":
+                    current_depth -= 1
+                    if current_depth == 0 and current_member_name:
+                        member_text = " ".join(current_member_lines)
+                        type_match = re.search(r"type\s*:\s*[`'\"](\w+)[`'\"]", member_text)
+                        members.append({
+                            "key": current_member_name,
+                            "type": type_match.group(1) if type_match else "unknown",
+                        })
+                        current_member_name = None
+                        current_member_lines = []
+
+        return members
+
+    return {
+        "cube_name": cube_name,
+        "measures": _extract_block_members(cube_model_js, "measures"),
+        "dimensions": _extract_block_members(cube_model_js, "dimensions"),
+    }
+
+
+def _execute_cube_query(conn_id: int, query: dict) -> dict:
+    """
+    Execute a Cube REST API query against the Cube.js runtime.
+    Returns the parsed JSON response body.
+    Raises HTTPException on network or Cube errors.
+    """
+    payload = json.dumps({"query": query}).encode("utf-8")
+    req = urllib.request.Request(
+        "http://cube:4000/cubejs-api/v1/load",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer bq_steward_secret_key",
+            "x-cube-conn-id": str(conn_id),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode())
+            if "error" in body:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Cube.js query error: {body['error']}",
+                )
+            return body
+    except HTTPException:
+        raise
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        try:
+            body = json.loads(raw)
+            raise HTTPException(
+                status_code=422,
+                detail=f"Cube.js error: {body.get('error', raw)}",
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=422, detail=f"Cube.js HTTP error: {raw[:500]}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Cannot reach Cube.js: {str(e)}")
+
+
 # Create tables on startup
 Base.metadata.create_all(bind=engine)
 
@@ -706,7 +828,112 @@ def update_table_cube_model(
     row = _get_or_create_table_meta(conn_id, dataset_id, table_id, db)
     
     row.cube_model = payload.cube_model
-    
+
     db.commit()
     db.refresh(row)
     return row
+
+
+# ── Chat endpoint ─────────────────────────────────────────────────────────────
+
+@app.post("/connections/{conn_id}/chat", response_model=schemas.ChatResponse)
+def chat_query(
+    conn_id: int,
+    payload: schemas.ChatRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Two-pass LLM chatbot for querying Cube models in natural language.
+
+    Pass 1 (temp=0.1): natural language → Cube REST API query JSON
+    Pass 2 (temp=0.3): Cube result data → natural language answer
+    """
+    import llm_utils
+
+    _get_connection_or_404(conn_id, db)
+
+    # Load all table metas with a generated Cube model for this connection
+    table_metas = (
+        db.query(models.TableMeta)
+        .filter(
+            models.TableMeta.connection_id == conn_id,
+            models.TableMeta.cube_model.isnot(None),
+        )
+        .all()
+    )
+
+    if not table_metas:
+        raise HTTPException(
+            status_code=400,
+            detail="No Cube models found for this connection. Generate Cube models for your tables first.",
+        )
+
+    # Build schema context string for the LLM prompt
+    schema_parts = []
+    for meta in table_metas:
+        parsed = _parse_cube_model_schema(meta.cube_model)
+        if not parsed["cube_name"]:
+            continue
+        cube_name = parsed["cube_name"]
+        lines = [f"Cube: {cube_name}"]
+
+        if parsed["measures"]:
+            lines.append("  Measures:")
+            for m in parsed["measures"]:
+                lines.append(f"    - {cube_name}.{m['key']} (type: {m['type']})")
+
+        if parsed["dimensions"]:
+            lines.append("  Dimensions:")
+            for d in parsed["dimensions"]:
+                lines.append(f"    - {cube_name}.{d['key']} (type: {d['type']})")
+
+        # Include human-readable metric definitions for extra context
+        if meta.metrics:
+            lines.append("  Business Metrics (descriptions only, not queryable members):")
+            for metric in (meta.metrics or [])[:10]:
+                name = metric.get("name", "")
+                defn = metric.get("definition", "")
+                if name:
+                    lines.append(f"    - {name}: {defn}")
+
+        schema_parts.append("\n".join(lines))
+
+    schema_context = "\n\n".join(schema_parts)
+    history = [{"role": m.role, "content": m.content} for m in payload.history]
+
+    # ── Pass 1: generate Cube query ───────────────────────────────────────────
+    try:
+        cube_query = llm_utils.generate_cube_query(
+            question=payload.message,
+            schema_context=schema_context,
+            history=history,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Query generation failed: {str(e)}")
+
+    # LLM signals the question cannot be answered with the available schema
+    if "error" in cube_query and len(cube_query) == 1:
+        return schemas.ChatResponse(
+            answer=f"I cannot answer that with the available data. {cube_query['error']}",
+            error=cube_query["error"],
+        )
+
+    # ── Execute Cube query ────────────────────────────────────────────────────
+    cube_result = _execute_cube_query(conn_id, cube_query)
+
+    # ── Pass 2: generate natural language answer ──────────────────────────────
+    try:
+        answer = llm_utils.generate_chat_answer(
+            question=payload.message,
+            cube_query=cube_query,
+            cube_result=cube_result,
+            history=history,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Answer generation failed: {str(e)}")
+
+    return schemas.ChatResponse(
+        answer=answer,
+        cube_query=cube_query,
+        cube_result=cube_result,
+    )

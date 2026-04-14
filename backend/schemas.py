@@ -74,3 +74,20 @@ class CubeModelGenerateOut(TableMetaOut):
     """Extended response for the generate-cube-model endpoint.
     Includes QC warnings so the UI can surface them without blocking the save."""
     cube_model_warnings: List[str] = []
+
+
+class ChatMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: List[ChatMessage] = []
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    cube_query: Optional[Dict[str, Any]] = None
+    cube_result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
